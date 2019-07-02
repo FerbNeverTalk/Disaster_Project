@@ -11,7 +11,7 @@ import re
 import pickle 
 from sqlalchemy import create_engine
 import matplotlib.pyplot as plt
-%matplotlib inline
+
 
 from nltk.tokenize import word_tokenize, sent_tokenize
 from nltk.stem import WordNetLemmatizer
@@ -33,51 +33,30 @@ simplefilter(action = 'ignore', category = FutureWarning)
 
 
 
-class StartingVerbExtractor(BaseEstimator, TransformerMixin):
+def load_data(database_filepath, threshold = 0.01):
+    engine = create_engine('sqlite:///' + database_filepath)
+    df = pd.read_sql_table('DisasterResponse', engine)
 
-    def starting_verb(self, text):
-        # tokenize by sentences
-        sentence_list = sent_tokenize(text)
-        
-        for sentence in sentence_list:
-            # tokenize each sentence into words and tag part of speech
-            if tokenize(sentence) != []:
-			
-				pos_tags = pos_tag(tokenize(sentence))
-
-            # index pos_tags to get the first word and part of speech tag
-				first_word, first_tag = pos_tags[0]
-            
-            # return true if the first word is an appropriate verb or RT for retweet
-				if first_tag in ['VB', 'VBP'] or first_word == 'RT':
-					return True
-
-            return False
-
-    def fit(self, x, y=None):
-        return self
-
-    def transform(self, X):
-        # apply starting_verb function to all values in X
-        X_tagged = pd.Series(X).apply(self.starting_verb)
-
-        return pd.DataFrame(X_tagged)
-
-def load_data(database_filepath):
-    engine = create_engine('sqlite:///figure8.db')
-	df = pd.read_sql_table('figure8', engine)
-
-	# drop irrelevant columns 
-	df = df.drop(['id', 'original'], axis = 1)
-	df = df[df.related != 2].reset_index(drop = True)
-
-
-	# X is only the message column, Y is a multi-label binarizer with 36 classes
-	X =  df['message']
-	y =  df.drop(labels = 'message', axis = 1)
-	
-	return X,y,y.columns.values
-
+    # drop irrelevant columns 
+    df = df.drop(['id', 'original'], axis = 1)
+    df = df[df.related != 2].reset_index(drop = True)
+    
+    # drop features that are stronly imbalance 
+    df_temp = df.iloc[:,2:]
+    dropped_dict = ((df_temp.sum(axis = 0)/len(df_temp) < threshold) |
+                       (df_temp.sum(axis = 0)/len(df_temp) > 1 - threshold)).to_dict()
+    
+    dropped_columns = []
+    for i in dropped_dict:
+        if dropped_dict[i] == True:
+            dropped_columns.append(i)
+    
+    df = df.drop(labels = dropped_columns, axis = 1)
+    # X is only the message column, Y is a multi-label binarizer with 36 classes
+    X =  df['message']
+    y =  df.drop(labels = ['message','genre'], axis = 1)
+    
+    return X, y, y.columns.values
 
 def tokenize(text):
     # normalize text: remove punctuation and lower case 
@@ -97,37 +76,30 @@ def tokenize(text):
 
 def build_model():
 
-	feature_union = FeatureUnion([
-    ('text_pipeline', Pipeline([
-            ('vect', CountVectorizer(tokenizer = tokenize)),
-            ('tfidf', TfidfTransformer())
-        ])),
-    ('verb_extract', StartingVerbExtractor())
-	])
-
-
-	pipeline = make_pipeline(feature_union, MultiOutputClassifier(RandomForestClassifier()))
-
-	
-	return pipeline
+    pipeline = make_pipeline(
+        CountVectorizer(tokenizer = tokenize),
+        TfidfTransformer(),
+        MultiOutputClassifier(RandomForestClassifier())
+    )
+    return pipeline
 
 
 def evaluate_model(model, X_test, Y_test, category_names):
     
-	
-	y_preds = model.predict(X_test)
-	df_preds = pd.DataFrame(y_preds, columns = Y_test.columns.values)
-	
-	y_true = Y_test[category_names]
-	y_pred = df_preds[category_names]
-	
-	print(f'The Classification Report --- \n\n {classification_report(y_true, y_pred)}\n')
+
+    y_preds = model.predict(X_test)
+    df_preds = pd.DataFrame(y_preds, columns = Y_test.columns.values)
+    
+    for i in category_names:
+        y_true = Y_test[i]
+        y_pred = df_preds[i]
+        print(f'The Classification Report for feature: {i} --- \n\n {classification_report(y_true, y_pred)}\n')
 
 
 def save_model(model, model_filepath):
     f = open(model_filepath, 'wb')
-	pickle.dump(model, f)
-	f.close()
+    pickle.dump(model, f)
+    f.close()
 
 
 def main():
